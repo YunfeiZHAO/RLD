@@ -240,7 +240,7 @@ class A2C(object):
 
         
 if __name__ == '__main__':
-    env, config, outdir, logger = init('./configs/config_random_cartpole.yaml', "RandomAgent")
+    env, config, outdir, logger = init('./configs/config_A2C.yaml', "RandomAgent")
     
     freqTest = config["freqTest"]
     freqSave = config["freqSave"]
