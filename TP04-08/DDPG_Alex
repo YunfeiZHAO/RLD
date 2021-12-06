@@ -4,9 +4,6 @@ import matplotlib
 from numpy import dtype, log
 from torch.nn.modules.activation import ReLU
 from torch.nn.modules.linear import Linear
-#from torch._C import long
-#matplotlib.use("Qt5agg")
-#matplotlib.use("TkAgg")
 import gym
 import gridworld
 import torch
@@ -14,7 +11,6 @@ from utils import *
 from core import *
 from memory import *
 from torch.utils.tensorboard import SummaryWriter
-#import highway_env
 from matplotlib import pyplot as plt
 import yaml
 from datetime import datetime
@@ -26,7 +22,7 @@ import torch.optim as optim
 from model import *
 
 
-class RandomAgent(object):
+class DDPG(object):
     """The world's simplest agent!"""
 
     def __init__(self, env, opt):
@@ -161,7 +157,7 @@ if __name__ == '__main__':
     np.random.seed(config["seed"])
     episode_count = config["nbEpisodes"]
 
-    agent = RandomAgent(env,config)
+    agent = DDPG(env,config)
 
     rsum = 0
     mean = 0
