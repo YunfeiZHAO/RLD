@@ -1,25 +1,25 @@
-env: Pendulum-v0                                                # environnement
+env: LunarLanderContinuous-v2 #MountainCarContinuous-v0 #Pendulum-v0                                                # environnement
 seed: 5
 featExtractor: !!python/name:__main__.NothingToDo ''
 freqSave: 1000
 freqTest: 5000
 nbTest: 1
 freqVerbose: 100000
-freqOptim: 500                                                                      # Optimisation de la politique tous les freqOptim evenements
+freqOptim: 200                                                                      # Optimisation de la politique tous les freqOptim evenements
 fromFile: null
-nbEpisodes: 30000
+nbEpisodes: 1000
 maxLengthTest: 500                                                                    # Longueur maxi des trajectoires en Test
 maxLengthTrain: 200                                                              # Longueur maxi des trajectoires en Train
 
 
-K_epochs: 10
-rho: 0.9
-discount: 0.95
-batch_size: 1000
+K_epochs: 50
+rho: 0.995
+discount: 0.99
+batch_size: 100
 sigma: 0.2
 mu: 0
 theta: 0.15
-lr_a: 0.0001
+lr_a: 0.001
 lr_c: 0.001
 
 
