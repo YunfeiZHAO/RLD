@@ -21,42 +21,41 @@ import torch.optim as optim
 
 
 class Actor(nn.Module):
-    """Actor (Policy) Model."""
-
-    def __init__(self, state_size, action_size, fc1_units=400, fc2_units=300):
-       
+    def __init__(self, state_dim, action_dim, max_action):
         super(Actor, self).__init__()
-        
-        self.fc1 = nn.Linear(state_size, fc1_units)
-        self.fc2 = nn.Linear(fc1_units, fc2_units)
-        self.fc3 = nn.Linear(fc2_units, action_size)
-    
-   
-    def forward(self, state):
-        """Build an actor (policy) network that maps states -> actions."""
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
-        return 2*torch.tanh(self.fc3(x))
+
+        self.l1 = nn.Linear(state_dim, 256)
+        self.l2 = nn.Linear(256, 256)
+        self.l3 = nn.Linear(256, action_dim)
+
+        self.max_action = max_action
+
+    def forward(self, x):
+        x = F.relu(self.l1(x))
+        x = F.relu(self.l2(x))
+        x = self.max_action * torch.tanh(self.l3(x))
+        return x
 
 
 class Critic(nn.Module):
-    """Critic (Value) Model."""
-
-    def __init__(self, state_size, action_size, fcs1_units=400, fc2_units=300):
-       
+    def __init__(self, state_dim, action_dim):
         super(Critic, self).__init__()
-       
-        self.fcs1 = nn.Linear(state_size, fcs1_units)
-        self.fc2 = nn.Linear(fcs1_units+action_size, fc2_units)
-        self.fc3 = nn.Linear(fc2_units, 1)
 
-  
-    def forward(self, state, action):
-        """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
-        xs = F.relu(self.fcs1(state))
-        x = torch.cat((xs, action), dim=1)
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+        self.l1 = nn.Linear(state_dim + action_dim, 256)
+        self.l2 = nn.Linear(256 , 256)
+        self.l3 = nn.Linear(256, 1)
+
+    def forward(self, x, u):
+        x = F.relu(self.l1(torch.cat([x, u], 1)))
+        x = F.relu(self.l2(x))
+        x = self.l3(x)
+        return x
+
+
+def init_weights(m):
+    if isinstance(m, nn.Linear):
+        torch.nn.init.xavier_uniform_(m.weight,gain=nn.init.calculate_gain('relu'))
+        torch.nn.init.uniform_(m.bias,-0.001,0.001)
 
 
 class DDPG(object):
@@ -73,17 +72,19 @@ class DDPG(object):
         self.nbEvents=0
         
         self.ob_dim=env.observation_space.shape[0]
+        self.action_size=env.action_space.shape[0]
+        self.action_scale=env.action_space.high[0]
         self.device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        self.actor_local = Actor(self.ob_dim, 1).to(self.device)
+        self.actor_local = Actor(self.ob_dim, self.action_size,self.action_scale).to(self.device)
         self.actor_target = copy.deepcopy(self.actor_local)
         self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=opt.lr_a)
 
-        self.critic_local = Critic(self.ob_dim, 1).to(self.device)
+        self.critic_local = Critic(self.ob_dim, self.action_size).to(self.device)
         self.critic_target = copy.deepcopy(self.critic_local)
         self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=opt.lr_c)
 
-        self.noise = Orn_Uhlen(1, mu=opt.mu, theta=opt.theta, sigma=opt.sigma)
+        self.noise = Orn_Uhlen(self.action_size, mu=opt.mu, theta=opt.theta, sigma=opt.sigma)
 
         self.actor_loss=None
         self.critic_loss=None
@@ -99,13 +100,13 @@ class DDPG(object):
    
     def act(self, obs):
         self.actor_local.eval()
-        prob=self.actor_local(torch.FloatTensor(obs).to(self.device))
+        prob=self.actor_local(torch.FloatTensor(obs).to(self.device).view(1,-1))
         self.actor_local.train()
         noise=self.noise.sample().to(self.device)
         action=torch.clamp(prob+noise, self.action_space.low[0], self.action_space.high[0])  
-        action=action.item()     
+        action=action.cpu().data.numpy().flatten()    
 
-        return [action]
+        return action
 
     # sauvegarde du modèle
     def save(self,outputDir):
@@ -124,13 +125,13 @@ class DDPG(object):
             _,_,batch=self.memory.sample(self.batch_size)
 
             batch=list(zip(*batch))
-            ob=torch.FloatTensor(batch[0]).view((self.batch_size,-1)).to(self.device)
-            act=torch.FloatTensor(batch[1]).view(-1,1).to(self.device)
+            ob=torch.FloatTensor(batch[0]).view((self.batch_size,self.ob_dim)).to(self.device)
+            act=torch.FloatTensor(batch[1]).view(self.batch_size,self.action_size).to(self.device)
             rew=torch.FloatTensor(batch[2]).view(-1).to(self.device)
-            new_ob=torch.FloatTensor(batch[3]).view((self.batch_size,-1)).to(self.device)
+            new_ob=torch.FloatTensor(batch[3]).view((self.batch_size,self.ob_dim)).to(self.device)
             d=torch.FloatTensor(batch[4]).view(-1).to(self.device)
 
-            new_act=self.actor_target(new_ob).view(-1,1)
+            new_act=self.actor_target(new_ob).view(self.batch_size,self.action_size)
             new_Q=self.critic_target(new_ob,new_act).view(-1)
             target=rew+self.discount*(1-d)*new_Q
             target=target.detach()
@@ -142,7 +143,7 @@ class DDPG(object):
             self.critic_optimizer.step()
             self.critic_loss=critic_loss.item()
 
-            act_pred=self.actor_local(ob)
+            act_pred=self.actor_local(ob).view(self.batch_size,self.action_size)
             actor_loss= -self.critic_local(ob, act_pred).mean()
             self.actor_optimizer.zero_grad()
             actor_loss.backward()   
@@ -167,8 +168,6 @@ class DDPG(object):
                 done=False
            
             tr=(np.squeeze(ob),action,reward,np.squeeze(new_obs),done)
-           
-            
             #self.lastTransition=tr #ici on n'enregistre que la derniere transition pour traitement immédiat, mais on pourrait enregistrer dans une structure de buffer (c'est l'interet de memory.py)
             self.memory.store(tr)
             
@@ -182,10 +181,11 @@ class DDPG(object):
     
         self.nbEvents+=1
         return self.nbEvents>=self.batch_size and self.nbEvents%self.opt.freqOptim==0
+        #return done
 
 
 if __name__ == '__main__':
-    env, config, outdir, logger = init('./configs/config_DDPG.yaml', "RandomAgent")
+    env, config, outdir, logger = init('./configs/config_DDPG.yaml', "DDPG")
     
     freqTest = config["freqTest"]
     freqSave = config["freqSave"]
@@ -195,7 +195,7 @@ if __name__ == '__main__':
     episode_count = config["nbEpisodes"]
 
     agent = DDPG(env,config)
-
+  
     rsum = 0
     mean = 0
     verbose = True
@@ -247,7 +247,7 @@ if __name__ == '__main__':
             ob = new_obs
             action= agent.act(ob)
             new_obs, reward, done, _ = env.step(action)
-            reward/=1000
+            #reward/=1000
 
             #new_obs = agent.featureExtractor.getFeatures(new_obs)
             agent.store(ob, action, new_obs, reward, done,j)
