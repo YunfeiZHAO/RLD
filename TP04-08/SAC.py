@@ -51,12 +51,11 @@ class Policy(nn.Module):
 
         mean,log_std=self.forward(state)
         std=log_std.exp()
-        normal=Normal(0,1)
-        x=normal.rsample()
-        z=mean+std*x
-
+        normal=Normal(mean,std)
+        z=normal.rsample()
         action=self.action_scale*torch.tanh(z)
-        log_prob=Normal(mean,std).log_prob(z)-torch.sum(torch.log(self.action_scale*(1-torch.tanh(z).pow(2))+1e-6),dim=1,keepdim=True)
+        log_prob=Normal(mean,std).log_prob(z)-torch.log(self.action_scale*(1-torch.tanh(z).pow(2))+1e-6)
+        log_prob=torch.sum(log_prob,dim=1,keepdim=True)
 
         return action,log_prob
 
@@ -105,20 +104,22 @@ class SAC(object):
         self.nbEvents=0
         
         self.ob_dim=env.observation_space.shape[0]
+        self.action_size=env.action_space.shape[0]
         self.action_scale=env.action_space.high[0]
         self.device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.actor = Policy(self.ob_dim, env.action_space.shape[0],self.action_scale,hidden_dim=256).to(self.device)
+        self.actor = Policy(self.ob_dim, self.action_size,self.action_scale,hidden_dim=256).to(self.device)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=opt.lr_a)
 
-        self.Q_local = QNetwork(self.ob_dim, env.action_space.shape[0],hidden_dim=256).to(self.device)
+        self.Q_local = QNetwork(self.ob_dim, self.action_size,hidden_dim=256).to(self.device)
         self.Q_optimizer = optim.Adam(self.Q_local.parameters(), lr=opt.lr_c)
         self.Q_target=copy.deepcopy(self.Q_local)
 
         self.adaptive=opt.adaptive
         self.log_alpha = torch.tensor(np.log(opt.alpha)).to(self.device)
+
         if self.adaptive:
-            self.target_entropy = opt.target_entropy
+            self.target_entropy = torch.tensor(-np.prod(env.action_space.shape)).to(self.device)
             self.log_alpha.requires_grad = True
             self.alpha_optim =optim.Adam([self.log_alpha], lr=opt.lr_alpha)
 
@@ -139,7 +140,7 @@ class SAC(object):
 
    
     def act(self, obs):
-        state = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        state = torch.FloatTensor(obs).to(self.device).view(1,-1)
         action,_=self.actor.getAction(state)
     
         return action.cpu().data.numpy().flatten()
@@ -162,17 +163,17 @@ class SAC(object):
 
             batch=list(zip(*batch))
             ob=torch.FloatTensor(batch[0]).view((self.batch_size,-1)).to(self.device)
-            act=torch.FloatTensor(batch[1]).view(-1,1).to(self.device)
-            rew=torch.FloatTensor(batch[2]).view(-1).to(self.device)
+            act=torch.FloatTensor(batch[1]).view(-1,self.action_size).to(self.device)
+            reward=torch.FloatTensor(batch[2]).view(-1,1).to(self.device)
             new_ob=torch.FloatTensor(batch[3]).view((self.batch_size,-1)).to(self.device)
-            d=torch.FloatTensor(batch[4]).view(-1).to(self.device)
+            done=torch.FloatTensor(batch[4]).view(-1,1).to(self.device)
 
             with torch.no_grad():
                 next_action,next_log_prob= self.actor.getAction(new_ob)
                 target_q1,target_q2=self.Q_target(new_ob,next_action)
                 target_q = reward + done * self.discount * (torch.min(target_q1, target_q2) - self.alpha * next_log_prob)
 
-
+            
             q1,q2=self.Q_local(ob,act)
             loss1=F.mse_loss(q1,target_q)
             loss2=F.mse_loss(q2,target_q)
@@ -247,7 +248,6 @@ if __name__ == '__main__':
     episode_count = config["nbEpisodes"]
 
     agent = SAC(env,config)
-    print(agent.alpha)
     rsum = 0
     mean = 0
     verbose = True
