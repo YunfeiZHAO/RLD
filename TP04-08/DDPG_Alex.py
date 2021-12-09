@@ -4,9 +4,6 @@ import matplotlib
 from numpy import dtype, log
 from torch.nn.modules.activation import ReLU
 from torch.nn.modules.linear import Linear
-#from torch._C import long
-#matplotlib.use("Qt5agg")
-#matplotlib.use("TkAgg")
 import gym
 import gridworld
 import torch
@@ -14,19 +11,54 @@ from utils import *
 from core import *
 from memory import *
 from torch.utils.tensorboard import SummaryWriter
-#import highway_env
 from matplotlib import pyplot as plt
 import yaml
 from datetime import datetime
 import copy
 from torch.distributions import Categorical
 import torch.nn as nn
-from torch.autograd import Variable
 import torch.optim as optim
-from model import *
 
 
-class RandomAgent(object):
+class Actor(nn.Module):
+    def __init__(self, state_dim, action_dim, max_action):
+        super(Actor, self).__init__()
+
+        self.l1 = nn.Linear(state_dim, 256)
+        self.l2 = nn.Linear(256, 256)
+        self.l3 = nn.Linear(256, action_dim)
+
+        self.max_action = max_action
+
+    def forward(self, x):
+        x = F.relu(self.l1(x))
+        x = F.relu(self.l2(x))
+        x = self.max_action * torch.tanh(self.l3(x))
+        return x
+
+
+class Critic(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(Critic, self).__init__()
+
+        self.l1 = nn.Linear(state_dim + action_dim, 256)
+        self.l2 = nn.Linear(256 , 256)
+        self.l3 = nn.Linear(256, 1)
+
+    def forward(self, x, u):
+        x = F.relu(self.l1(torch.cat([x, u], 1)))
+        x = F.relu(self.l2(x))
+        x = self.l3(x)
+        return x
+
+
+def init_weights(m):
+    if isinstance(m, nn.Linear):
+        torch.nn.init.xavier_uniform_(m.weight,gain=nn.init.calculate_gain('relu'))
+        torch.nn.init.uniform_(m.bias,-0.001,0.001)
+
+
+class DDPG(object):
     """The world's simplest agent!"""
 
     def __init__(self, env, opt):
@@ -40,39 +72,41 @@ class RandomAgent(object):
         self.nbEvents=0
         
         self.ob_dim=env.observation_space.shape[0]
+        self.action_size=env.action_space.shape[0]
+        self.action_scale=env.action_space.high[0]
         self.device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        self.actor_local = Actor(self.ob_dim, 1).to(self.device)
+        self.actor_local = Actor(self.ob_dim, self.action_size,self.action_scale).to(self.device)
         self.actor_target = copy.deepcopy(self.actor_local)
-        self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=1e-4)
+        self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=opt.lr_a)
 
-        # Critic Network (w/ Target Network)
-        self.critic_local = Critic(self.ob_dim, 1).to(self.device)
+        self.critic_local = Critic(self.ob_dim, self.action_size).to(self.device)
         self.critic_target = copy.deepcopy(self.critic_local)
-        self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=1e-3)
+        self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=opt.lr_c)
 
-        self.noise = Orn_Uhlen(1)
+        self.noise = Orn_Uhlen(self.action_size, mu=opt.mu, theta=opt.theta, sigma=opt.sigma)
 
         self.actor_loss=None
         self.critic_loss=None
 
         self.K=opt.K_epochs
-        self.discount=0.99
-        self.rho=0.999  
+        self.discount=opt.discount
+        self.rho=opt.rho 
+        self.batch_size=opt.batch_size 
 
         self.memory=Memory(mem_size=100000)
 
-        self.batch_size=128
+       
    
     def act(self, obs):
         self.actor_local.eval()
-        prob=self.actor_local(torch.FloatTensor(obs).to(self.device))
+        prob=self.actor_local(torch.FloatTensor(obs).to(self.device).view(1,-1))
         self.actor_local.train()
         noise=self.noise.sample().to(self.device)
         action=torch.clamp(prob+noise, self.action_space.low[0], self.action_space.high[0])  
-        action=action.item()     
+        action=action.cpu().data.numpy().flatten()    
 
-        return [action]
+        return action
 
     # sauvegarde du modèle
     def save(self,outputDir):
@@ -91,13 +125,13 @@ class RandomAgent(object):
             _,_,batch=self.memory.sample(self.batch_size)
 
             batch=list(zip(*batch))
-            ob=torch.FloatTensor(batch[0]).view((self.batch_size,-1)).to(self.device)
-            act=torch.FloatTensor(batch[1]).view(-1,1).to(self.device)
+            ob=torch.FloatTensor(batch[0]).view((self.batch_size,self.ob_dim)).to(self.device)
+            act=torch.FloatTensor(batch[1]).view(self.batch_size,self.action_size).to(self.device)
             rew=torch.FloatTensor(batch[2]).view(-1).to(self.device)
-            new_ob=torch.FloatTensor(batch[3]).view((self.batch_size,-1)).to(self.device)
+            new_ob=torch.FloatTensor(batch[3]).view((self.batch_size,self.ob_dim)).to(self.device)
             d=torch.FloatTensor(batch[4]).view(-1).to(self.device)
 
-            new_act=self.actor_target(new_ob).view(-1,1)
+            new_act=self.actor_target(new_ob).view(self.batch_size,self.action_size)
             new_Q=self.critic_target(new_ob,new_act).view(-1)
             target=rew+self.discount*(1-d)*new_Q
             target=target.detach()
@@ -109,7 +143,7 @@ class RandomAgent(object):
             self.critic_optimizer.step()
             self.critic_loss=critic_loss.item()
 
-            act_pred=self.actor_local(ob)
+            act_pred=self.actor_local(ob).view(self.batch_size,self.action_size)
             actor_loss= -self.critic_local(ob, act_pred).mean()
             self.actor_optimizer.zero_grad()
             actor_loss.backward()   
@@ -134,8 +168,6 @@ class RandomAgent(object):
                 done=False
            
             tr=(np.squeeze(ob),action,reward,np.squeeze(new_obs),done)
-           
-            
             #self.lastTransition=tr #ici on n'enregistre que la derniere transition pour traitement immédiat, mais on pourrait enregistrer dans une structure de buffer (c'est l'interet de memory.py)
             self.memory.store(tr)
             
@@ -149,10 +181,11 @@ class RandomAgent(object):
     
         self.nbEvents+=1
         return self.nbEvents>=self.batch_size and self.nbEvents%self.opt.freqOptim==0
+        #return done
 
 
 if __name__ == '__main__':
-    env, config, outdir, logger = init('./configs/config_random_cartpole.yaml', "RandomAgent")
+    env, config, outdir, logger = init('./configs/config_DDPG.yaml', "DDPG")
     
     freqTest = config["freqTest"]
     freqSave = config["freqSave"]
@@ -161,8 +194,8 @@ if __name__ == '__main__':
     np.random.seed(config["seed"])
     episode_count = config["nbEpisodes"]
 
-    agent = RandomAgent(env,config)
-
+    agent = DDPG(env,config)
+  
     rsum = 0
     mean = 0
     verbose = True
@@ -214,7 +247,7 @@ if __name__ == '__main__':
             ob = new_obs
             action= agent.act(ob)
             new_obs, reward, done, _ = env.step(action)
-            reward/=1000
+            #reward/=1000
 
             #new_obs = agent.featureExtractor.getFeatures(new_obs)
             agent.store(ob, action, new_obs, reward, done,j)
