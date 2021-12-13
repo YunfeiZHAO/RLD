@@ -1,27 +1,29 @@
-env: • Pendulum-v0 #LunarLanderContinuous-v2                                               # environnement
+env: LunarLanderContinuous-v2 #Pendulum-v0  #                                           # environnement
 seed: 5
-featExtractor: !!python/name:__main__.NothingToDo ''
+featExtractor: !!python/name:__main__.NothingToDo 
 freqSave: 1000
 freqTest: 5000
 nbTest: 1
 freqVerbose: 100000
-freqOptim: 200                                                                    # Optimisation de la politique tous les freqOptim evenements
+freqOptim: 1                                                                   # Optimisation de la politique tous les freqOptim evenements
 fromFile: null
-nbEpisodes: 5000
+nbEpisodes: 500000
 maxLengthTest: 500                                                                    # Longueur maxi des trajectoires en Test
 maxLengthTrain: 200                                                              # Longueur maxi des trajectoires en Train
 
 
-K_epochs: 50
-rho: 0.995
+K_epochs: 1
+tau: 0.995
 discount: 0.99
-batch_size: 128
-lr_a: 0.0003
+batch_size: 256
+hidden_dim: 256
+lr_p: 0.0003
 lr_c: 0.0003
 lr_alpha: 0.0003
 alpha: 1.
-target_entropy: 0.2
+target_entropy: -2
 adaptive: True
+
 
 
 
