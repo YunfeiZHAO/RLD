@@ -202,6 +202,7 @@ if __name__ == '__main__':
     itest = 0
     reward = 0
     done = False
+    t=time.time()
     for i in range(episode_count):
         checkConfUpdate(outdir, config)
 
@@ -273,5 +274,9 @@ if __name__ == '__main__':
                 rsum = 0
                 agent.noise.reset()
                 break
+
+        if time.time()>=t+1680:
+            break
+    
      
     env.close()
