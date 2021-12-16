@@ -145,7 +145,6 @@ if __name__ == '__main__':
     for i in range(episode_count):
         checkConfUpdate(outdir, config)
         rsum = 0
-        agent.nbEvents = 0
         ob = env.reset()
 
         # On souhaite afficher l'environnement (attention à ne pas trop afficher car ça ralentit beaucoup)
@@ -207,7 +206,6 @@ if __name__ == '__main__':
                     env.render()
                 print(str(i) + " rsum=" + str(rsum) + ", " + str(j) + " actions ")
                 logger.direct_write("reward", rsum, i)
-                agent.nbEvents = 0
                 mean += rsum
                 rsum = 0
                 break

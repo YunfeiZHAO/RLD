@@ -22,72 +22,69 @@ import torch.nn as nn
 import torch.optim as optim
 
 
+class PolicyNetwork(nn.Module):
+    def __init__(self, state_dim,action_dim,max_action,min_action,hidden_dim=256):
+        super(PolicyNetwork, self).__init__()
+        self.l1 = nn.Linear(state_dim, hidden_dim)
+        self.l2 = nn.Linear(hidden_dim, hidden_dim)
+        self.l3 = nn.Linear(hidden_dim, hidden_dim)
+        self.l4 = nn.Linear(hidden_dim, hidden_dim)
+        self.mu_head = nn.Linear(hidden_dim, action_dim)
+        self.log_std_head = nn.Linear(hidden_dim, action_dim)
 
-class Policy(nn.Module):
-    def __init__(self,state_dim,action_dim,action_scale,hidden_dim=256):
-        super(Policy,self).__init__()
+        self.action_scale = (max_action - min_action) / 2.0
+        self.action_bias = (max_action + min_action) / 2.0
 
-        self.linear1=nn.Linear(state_dim,hidden_dim)
-        #self.bn1=nn.BatchNorm1d(hidden_dim)
-        self.linear2=nn.Linear(hidden_dim,hidden_dim)
-        #self.bn2=nn.BatchNorm1d(hidden_dim)
+    def forward(self, x):
+        x = F.relu(self.l1(x))
+        x = F.relu(self.l2(x))
+        mu = self.mu_head(x)
+        log_std = self.log_std_head(x)
+        log_std = torch.clamp(log_std, -20, 2)
+        return mu, log_std
 
-        self.mean=nn.Linear(hidden_dim,action_dim)
-        self.log_std=nn.Linear(hidden_dim,action_dim)
+    def gaussian_sample(self, state):
+        mean, log_std = self.forward(state)
+        std = torch.exp(log_std)
+        dist = Normal(mean, std)
+        x_t = dist.rsample()
+        y_t = torch.tanh(x_t)
+        action = self.action_scale * y_t + self.action_bias
+        eval_action=self.action_scale * mean + self.action_bias
 
-        self.action_scale=action_scale
 
-    def forward(self,state):
-        x=F.leaky_relu(self.linear1(state))
-        x=F.leaky_relu(self.linear2(x))
+        # # Enforcing Action Bound
+        log_prob = dist.log_prob(x_t)
+        log_prob = torch.sum(log_prob - torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6), dim=1, keepdim=True)
 
-        mean=self.mean(x)
-        log_std=self.log_std(x)
-        log_std=torch.clamp(log_std,-20,2)
-
-        return mean,log_std
-
-    def getAction(self,state):
-
-        mean,log_std=self.forward(state)
-        std=log_std.exp()
-        normal=Normal(mean,std)
-        z=normal.rsample()
-        action=self.action_scale*torch.tanh(z)
-        log_prob=Normal(mean,std).log_prob(z)-torch.log(self.action_scale*(1-torch.tanh(z).pow(2))+1e-6)
-        log_prob=torch.sum(log_prob,dim=1,keepdim=True)
-
-        return action,log_prob
+        return action, log_prob,eval_action
 
 class QNetwork(nn.Module):
-    def __init__(self,state_dim,action_dim,hidden_dim=256):
-        super(QNetwork,self).__init__()
+    def __init__(self, state_dim, action_dim,hidden_dim=256):
+        super(QNetwork, self).__init__()
+        self.l1_1 = nn.Linear(state_dim + action_dim, hidden_dim)
+        self.l2_1 = nn.Linear(hidden_dim, hidden_dim)
+        #self.l3_1 = nn.Linear(hidden_dim, hidden_dim)
+        self.l4_1 = nn.Linear(hidden_dim, 1)
 
-        self.linear1=nn.Linear(state_dim+action_dim,hidden_dim)
-        #self.bn1=nn.BatchNorm1d(hidden_dim)
-        self.linear2=nn.Linear(hidden_dim,hidden_dim)
-        self.bn2=nn.BatchNorm1d(hidden_dim)
-        self.linear3=nn.Linear(hidden_dim,1)
+        self.l1_2 = nn.Linear(state_dim + action_dim, hidden_dim)
+        self.l2_2 = nn.Linear(hidden_dim, hidden_dim)
+        #self.l3_2 = nn.Linear(hidden_dim, hidden_dim)
+        self.l4_2 = nn.Linear(hidden_dim, 1)
 
-        self.linear4=nn.Linear(state_dim+action_dim,hidden_dim)
-        #self.bn4=nn.BatchNorm1d(hidden_dim)
-        self.linear5=nn.Linear(hidden_dim,hidden_dim)
-        #self.bn5=nn.BatchNorm1d(hidden_dim)
-        self.linear6=nn.Linear(hidden_dim,1)
+    def forward(self, s, a):
+        x0 = torch.cat((s, a), dim=1)
 
-    def forward(self,state,action):
-        x=torch.cat((state,action),dim=1)
+        x1 = F.relu(self.l1_1(x0))
+        x1 = F.relu(self.l2_1(x1))
+        #x1 = F.leaky_relu(self.l3_1(x1))
+        x1 = self.l4_1(x1)
 
-        x1=F.leaky_relu(self.linear1(x))
-        x1=F.leaky_relu(self.linear2(x1))
-        x1=self.linear3(x1)
-
-        x2=F.leaky_relu(self.linear4(x))
-        x2=F.leaky_relu(self.linear5(x2))
-        x2=self.linear6(x2)
-
-        return x1,x2
-
+        x2 = F.relu(self.l1_2(x0))
+        x2 = F.relu(self.l2_2(x2))
+        #x2 = F.leaky_relu(self.l3_2(x2))
+        x2 = self.l4_2(x2)
+        return x1, x2
 
 
 class SAC(object):
@@ -103,46 +100,53 @@ class SAC(object):
         self.test=False
         self.nbEvents=0
         
-        self.ob_dim=env.observation_space.shape[0]
-        self.action_size=env.action_space.shape[0]
-        self.action_scale=env.action_space.high[0]
+        state_dim = env.observation_space.shape[0]
+        action_dim = env.action_space.shape[0]
+        max_action = env.action_space.high[0]
+        min_action = env.action_space.low[0]
         self.device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.actor = Policy(self.ob_dim, self.action_size,self.action_scale,hidden_dim=256).to(self.device)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=opt.lr_a)
+        self.policynetwork = PolicyNetwork(state_dim,action_dim,max_action,min_action,hidden_dim=opt.hidden_dim).to(self.device)
+        self.optimizer_policy = optim.Adam(self.policynetwork.parameters(), lr=opt.lr_p)
 
-        self.Q_local = QNetwork(self.ob_dim, self.action_size,hidden_dim=256).to(self.device)
-        self.Q_optimizer = optim.Adam(self.Q_local.parameters(), lr=opt.lr_c)
-        self.Q_target=copy.deepcopy(self.Q_local)
+        self.qnetwork = QNetwork(state_dim, action_dim,hidden_dim=opt.hidden_dim).to(self.device)
+        self.target_qnetwork = QNetwork(state_dim, action_dim,hidden_dim=opt.hidden_dim).to(self.device)
+        self.target_qnetwork.load_state_dict(self.qnetwork.state_dict())
+        self.optimizer_qnetwork = optim.Adam(self.qnetwork.parameters(), lr=opt.lr_c)
+
+        self.memory=Memory(int(10e5))
+        
+        self.discount=opt.discount
+        self.tau=opt.tau
+        self.K_epochs=opt.K_epochs
+
+        self.startsteps=opt.startsteps
 
         self.adaptive=opt.adaptive
-        self.log_alpha = torch.tensor(np.log(opt.alpha)).to(self.device)
+        self.alpha=torch.tensor(opt.alpha)
 
-        if self.adaptive:
-            self.target_entropy = torch.tensor(-np.prod(env.action_space.shape)).to(self.device)
-            self.log_alpha.requires_grad = True
-            self.alpha_optim =optim.Adam([self.log_alpha], lr=opt.lr_alpha)
+        if self.adaptive is True:
+            self.target_entropy = -torch.prod(torch.Tensor(env.action_space.shape).to(self.device)).item()
+            self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+            #self.target_entropy=opt.target_entropy
+            #self.log_alpha = torch.tensor(np.log(opt.alpha), requires_grad=True, device=self.device)
+            self.alpha_optim = optim.Adam([self.log_alpha], lr=opt.lr_alpha)
+            self.alpha=self.log_alpha.exp()
 
-        self.actor_loss=None
-        self.critic_loss=None
-        self.alpha_loss=None
 
-        self.K=opt.K_epochs
-        self.discount=opt.discount
-        self.rho=opt.rho 
-        self.batch_size=opt.batch_size 
- 
-        self.memory=Memory(mem_size=100000)
+        self.noise=Orn_Uhlen(env.action_space.shape[0],sigma=opt.sigma)
 
-    @property
-    def alpha(self):
-        return self.log_alpha.exp()
-
-   
     def act(self, obs):
-        state = torch.FloatTensor(obs).to(self.device).view(1,-1)
-        action,_=self.actor.getAction(state)
-    
+
+        state = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        if self.test:
+            _, _,action = self.policynetwork.gaussian_sample(state)
+        else:
+            action,_,_ = self.policynetwork.gaussian_sample(state)
+            noise=self.noise.sample().to(self.device)
+            action=torch.clamp(action+noise, self.action_space.low[0], self.action_space.high[0])  
+
+
         return action.cpu().data.numpy().flatten()
 
     # sauvegarde du modèle
@@ -157,55 +161,55 @@ class SAC(object):
         
     def learn(self):
 
-        for _ in range(self.K):
+        for _ in range(self.K_epochs):
 
-            _,_,batch=self.memory.sample(self.batch_size)
-
-            batch=list(zip(*batch))
-            ob=torch.FloatTensor(batch[0]).view((self.batch_size,-1)).to(self.device)
-            act=torch.FloatTensor(batch[1]).view(-1,self.action_size).to(self.device)
-            reward=torch.FloatTensor(batch[2]).view(-1,1).to(self.device)
-            new_ob=torch.FloatTensor(batch[3]).view((self.batch_size,-1)).to(self.device)
-            done=torch.FloatTensor(batch[4]).view(-1,1).to(self.device)
+            _,_,batch=self.memory.sample(self.opt.batch_size)
+            state, action, reward, next_state, done = list(zip(*batch))
+            state = torch.FloatTensor(state).to(self.device)
+            action = torch.FloatTensor(action).to(self.device)
+            reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)
+            next_state = torch.FloatTensor(next_state).to(self.device)
+            done = torch.Tensor(done).unsqueeze(1).to(self.device)
 
             with torch.no_grad():
-                next_action,next_log_prob= self.actor.getAction(new_ob)
-                target_q1,target_q2=self.Q_target(new_ob,next_action)
-                target_q = reward + done * self.discount * (torch.min(target_q1, target_q2) - self.alpha * next_log_prob)
+                next_action, next_log_prob,_ = self.policynetwork.gaussian_sample(next_state)
+                target_Q1, target_Q2 = self.target_qnetwork(next_state, next_action)
+                target_Q = reward + (1-done) * self.discount * (torch.min(target_Q1, target_Q2) - self.alpha * next_log_prob)
 
-            
-            q1,q2=self.Q_local(ob,act)
-            loss1=F.mse_loss(q1,target_q)
-            loss2=F.mse_loss(q2,target_q)
-            q_loss=loss1+loss2
-            self.critic_loss=q_loss.item()
+            Q1, Q2 = self.qnetwork(state, action)
+            Q1_loss = F.mse_loss(Q1, target_Q)
+            Q2_loss = F.mse_loss(Q2, target_Q)
+            Q_loss = 1/2*(Q1_loss + Q2_loss)
+            self.critic_loss=Q_loss.item()
 
-            self.Q_optimizer.zero_grad()
-            q_loss.backward()
-            self.Q_optimizer.step()
-            self.Q_loss=q_loss
+            self.optimizer_qnetwork.zero_grad()
+            Q_loss.backward()
+            self.optimizer_qnetwork.step()
 
-            action,log_prob=self.actor.getAction(ob)
-            q1,q2 =self.Q_local(ob,action)
-            actor_q=torch.min(q1,q2)
-            actor_loss=torch.mean(   self.alpha.detach()*log_prob  -  actor_q   )
-            self.actor_loss=actor_loss.item()
-     
-            self.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            self.actor_optimizer.step()
+            action_new, log_prob,_ = self.policynetwork.gaussian_sample(state)
+            Q1_new, Q2_new = self.qnetwork(state, action_new)
+            policy_loss = (self.alpha.detach()* log_prob - torch.min(Q1_new, Q2_new)).mean()
+            self.policy_loss=policy_loss.item()
 
+            self.optimizer_policy.zero_grad()
+            policy_loss.backward()
+            self.optimizer_policy.step()
+
+                    
             if self.adaptive:
+                with torch.no_grad():
+                    _,log_prob,_=self.policynetwork.gaussian_sample(state)
+                
+                alpha_loss = torch.mean(self.alpha * (-log_prob - self.target_entropy) )
                 self.alpha_optim.zero_grad()
-                alpha_loss = torch.mean(self.alpha * (-log_prob - self.target_entropy).detach() )
                 alpha_loss.backward()
                 self.alpha_optim.step()
+                self.alpha=self.log_alpha.exp()
                 self.alpha_loss=alpha_loss.item()
 
-            for target_param, local_param in zip(self.Q_target.parameters(), self.Q_local.parameters()):
-                target_param.data.copy_((1-self.rho)*local_param.data + self.rho*target_param.data)
+            for param, target_param in zip(self.qnetwork.parameters(), self.target_qnetwork.parameters()):
+                target_param.data.copy_(self.tau * target_param.data + (1 - self.tau) * param.data)
 
-            
 
                 
     # enregistrement de la transition pour exploitation par learn ulterieure
@@ -219,7 +223,7 @@ class SAC(object):
                 done=False
            
             tr=(np.squeeze(ob),action,reward,np.squeeze(new_obs),done)
-           
+            
             
             #self.lastTransition=tr #ici on n'enregistre que la derniere transition pour traitement immédiat, mais on pourrait enregistrer dans une structure de buffer (c'est l'interet de memory.py)
             self.memory.store(tr)
@@ -233,10 +237,9 @@ class SAC(object):
             return False
     
         self.nbEvents+=1
-        
-        return self.nbEvents%self.opt.freqOptim==0
-
-
+    
+        return self.nbEvents%self.opt.freqOptim==0 and self.nbEvents>=self.startsteps 
+       
 
 if __name__ == '__main__':
     env, config, outdir, logger = init('./configs/config_SAC.yaml', "SAC")
@@ -254,11 +257,11 @@ if __name__ == '__main__':
     itest = 0
     reward = 0
     done = False
+    t=time.time()
     for i in range(episode_count):
         checkConfUpdate(outdir, config)
 
         rsum = 0
-        #agent.nbEvents = 0
         ob = env.reset()
 
         # On souhaite afficher l'environnement (attention à ne pas trop afficher car çà ralentit beaucoup)
@@ -297,13 +300,13 @@ if __name__ == '__main__':
                 #env.render()
 
             ob = new_obs
-            if i < 1000:
-                action = env.action_space.sample()
+            if agent.nbEvents>=agent.startsteps:
+                action= agent.act(ob)
             else:
-               action= agent.act(ob)
+                action=env.action_space.sample()
             
             new_obs, reward, done, _ = env.step(action)
-            reward/=100
+            reward=reward
 
             #new_obs = agent.featureExtractor.getFeatures(new_obs)
             agent.store(ob, action, new_obs, reward, done,j)
@@ -315,11 +318,11 @@ if __name__ == '__main__':
                 done = True
                 print("forced done!")
 
-            rsum += reward*100
+            rsum += reward
 
             if agent.timeToLearn(done):
                 agent.learn()
-                logger.direct_write("actor loss", agent.actor_loss, agent.nbEvents)
+                logger.direct_write("actor loss", agent.policy_loss, agent.nbEvents)
                 logger.direct_write("critic loss", agent.critic_loss, agent.nbEvents)
                 if agent.adaptive:
                     logger.direct_write("alpha loss", agent.alpha_loss, agent.nbEvents)
@@ -331,6 +334,11 @@ if __name__ == '__main__':
                 logger.direct_write("reward", rsum, i)
                 mean += rsum
                 rsum = 0
+                agent.noise.reset()
                 break
+        
+        if time.time()>=t+600:
+            #break
+            pass
      
     env.close()

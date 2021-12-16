@@ -172,12 +172,12 @@ class PPO(object):
 
         probs = self.actor(old_states)
         dist=Categorical(probs)
-        kl_div=F.kl_div(input=dist.probs.view((-1,self.action_space.n)),target=pi_old.view((-1,self.action_space.n)),reduction='batchmean')
-        self.kl_loss=kl_div
+        DL=F.kl_div(input=dist.probs.view((-1,self.action_space.n)),target=pi_old.view((-1,self.action_space.n)),reduction='batchmean')
+        self.kl_loss=DL
 
-        if kl_div>=1.5*self.delta:
+        if DL>=1.5*self.delta:
             self.beta*=2
-        if kl_div<=self.delta/1.5:
+        if DL<=self.delta/1.5:
             self.beta*=0.5
 
         
@@ -320,8 +320,8 @@ class PPO(object):
             self.optimizer_actor.step()
 
         pi_new = self.actor(old_states).view((-1,self.action_space.n))
-        kl_div=F.kl_div(input=pi_new,target=pi_old.view((-1,self.action_space.n)),reduction='batchmean')
-        self.kl_loss=kl_div
+        DL=F.kl_div(input=pi_new,target=pi_old.view((-1,self.action_space.n)),reduction='batchmean')
+        self.kl_loss=DL
 
         loss=F.smooth_l1_loss(target,state_values)
         self.critic_loss=loss
