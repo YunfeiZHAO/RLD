@@ -374,7 +374,7 @@ class PPO(object):
         return self.nbEvents%self.opt.freqOptim == 0
 
 if __name__ == '__main__':
-    env, config, outdir, logger = init('./configs/config_random_cartpole.yaml', "RandomAgent")
+    env, config, outdir, logger = init('./configs/config_PPO.yaml', "PPO")
     
     freqTest = config["freqTest"]
     freqSave = config["freqSave"]
